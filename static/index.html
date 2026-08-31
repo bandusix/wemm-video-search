@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>WeMM · 找到你脑海中的那一刻</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0b0a10; --panel: #14121c; --panel2: #1b1826;
+    --border: #2a2638; --text: #e8e5f2; --dim: #8b86a0;
+    --accent: #8b5cf6; --accent2: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; min-height: 100vh; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 28px 24px 60px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 24px; }
+  h1 { font-size: 30px; font-weight: 800; letter-spacing: .5px; }
+  h1 .hl { color: var(--accent2); }
+  .brand { color: var(--dim); font-size: 13px; }
+  .brand b { color: var(--accent2); font-size: 18px; }
+
+  .grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+  .panel h3 { font-size: 13px; color: var(--dim); font-weight: 600; margin-bottom: 10px; letter-spacing: 1px; }
+
+  video#player { display: block; margin: 0 auto; border-radius: 10px; background: #000; aspect-ratio: 16/9; width: 100%; }
+  .panel.sz-s video#player { max-width: 420px; }
+  .panel.sz-m video#player { max-width: 640px; }
+  .phead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .phead h3 { margin: 0; }
+  .szbtns { display: flex; gap: 4px; }
+  .szbtns button { background: var(--panel2); border: 1px solid var(--border); color: var(--dim); font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+  .szbtns button.on { color: #fff; background: var(--accent); border-color: var(--accent); }
+  #seginfo { font-size: 12px; color: var(--dim); margin-top: 8px; min-height: 16px; }
+
+  /* 时间轴柱状图 */
+  #bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; margin-top: 10px; cursor: pointer; }
+  #bars .bar { flex: 1 1 0; min-width: 0; background: #35304a; border-radius: 2px 2px 0 0; transition: height .25s, background .25s; height: 12%; }
+  #bars .bar.hot { background: var(--accent); }
+  #bars .bar.top { background: #c4b5fd; }
+  #bars .bar.playing { outline: 1px solid #fff; }
+
+  /* 视频库 */
+  .vlist { display: flex; flex-direction: column; gap: 8px; }
+  .vcard { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: var(--panel2); }
+  .vcard:hover { border-color: var(--accent); }
+  .vcard.active { border-color: var(--accent); background: #221c33; }
+  .vcard img { width: 64px; height: 36px; object-fit: cover; border-radius: 6px; background: #000; }
+  .vcard .nm { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vcard .st { font-size: 11px; color: var(--dim); }
+  .upl { margin-top: 10px; }
+  .upl input { display: none; }
+  .upl label { display: block; text-align: center; padding: 9px; border: 1px dashed var(--border); border-radius: 10px; color: var(--dim); font-size: 13px; cursor: pointer; }
+  .upl label:hover { color: var(--accent2); border-color: var(--accent); }
+
+  /* 检索区 */
+  textarea { width: 100%; height: 64px; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; color: var(--text); padding: 10px; font-size: 14px; resize: none; font-family: inherit; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .chip { font-size: 12px; color: var(--accent2); background: #221c33; border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  button#go { width: 100%; padding: 12px; background: var(--accent); color: #fff; font-size: 15px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; }
+  button#go:hover { background: #7c4fe0; }
+  button#go:disabled { background: #3a3452; color: var(--dim); cursor: default; }
+
+  /* 统计 */
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 18px 0; }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .stat .v { font-size: 22px; font-weight: 800; color: var(--accent2); }
+  .stat .k { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  /* 结果 */
+  .rlist { display: flex; flex-direction: column; gap: 8px; }
+  .rrow { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+  .rrow:hover { border-color: var(--accent); }
+  .rrow.best { border-color: var(--accent); background: #221c33; }
+  .rrow img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #000; }
+  .rrow .t { font-size: 14px; font-weight: 600; flex: 1; }
+  .rrow .rank { font-size: 12px; color: var(--dim); width: 28px; }
+  .rrow .sc { font-size: 15px; font-weight: 700; color: var(--accent2); }
+  .scorebar { height: 4px; background: #35304a; border-radius: 2px; margin-top: 5px; width: 140px; }
+  .scorebar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+  .muted { color: var(--dim); font-size: 13px; padding: 12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>找到你脑海中的<span class="hl">那一刻</span>。</h1>
+    <div class="brand">WeMM-Embedding <b>2B</b> · <span id="devinfo">加载中…</span></div>
+  </header>
+
+  <div class="grid">
+    <div>
+      <div class="panel" id="ppanel">
+        <div class="phead">
+          <h3>播放器</h3>
+          <div class="szbtns" id="szbtns">
+            <button data-sz="sz-s">小</button>
+            <button data-sz="sz-m">中</button>
+            <button data-sz="sz-l">大</button>
+          </div>
+        </div>
+        <video id="player" controls muted></video>
+        <div id="seginfo"></div>
+        <div id="bars" title="每格 = 一个片段，高度 = 与当前 query 的相似度，点击跳转"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div class="panel">
+        <h3>视频库（点击切换）</h3>
+        <div class="vlist" id="vlist"></div>
+        <div class="upl">
+          <input type="file" id="file" accept="video/*">
+          <label for="file">＋ 上传新视频（自动切片并编码索引）</label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>用文字描述检索画面</h3>
+        <textarea id="q" placeholder="例：兔子从洞里钻出来伸懒腰 / a butterfly flying near flowers"></textarea>
+        <div class="chips" id="chips"></div>
+        <button id="go">检索这段视频</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v" id="s-clips">–</div><div class="k">片段数（每段 8s）</div></div>
+    <div class="stat"><div class="v">2048</div><div class="k">向量维度 · L2 归一化</div></div>
+    <div class="stat"><div class="v" id="s-enc">–</div><div class="k">query 编码耗时</div></div>
+    <div class="stat"><div class="v" id="s-dev">–</div><div class="k">推理设备</div></div>
+  </div>
+
+  <div class="panel">
+    <h3 id="rtitle">检索结果（点击行跳转到对应时间段）</h3>
+    <div class="rlist" id="rlist"><div class="muted">选择一个视频，输入描述后点「检索这段视频」。</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cur = null;        // 当前视频 meta
+let lastScores = null; // 当前 query 的全片段分数
+let segEnd = null;     // 片段播放截止
+
+const CHIPS = [
+  "兔子从洞里钻出来伸懒腰",
+  "a butterfly flying near flowers",
+  "three small animals in a tree",
+  "黄色跑车",
+];
+$('chips').innerHTML = CHIPS.map(c => `<span class="chip">${c}</span>`).join('');
+$('chips').onclick = e => { if (e.target.classList.contains('chip')) { $('q').value = e.target.textContent; doSearch(); } };
+
+function fmt(s) {
+  s = Math.floor(s);
+  const mm = String(Math.floor(s / 60) % 60).padStart(2, '0'), ss = String(s % 60).padStart(2, '0');
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+// 播放器尺寸档位（记住偏好）
+function setSize(sz) {
+  $('ppanel').classList.remove('sz-s', 'sz-m', 'sz-l');
+  $('ppanel').classList.add(sz);
+  document.querySelectorAll('#szbtns button').forEach(b => b.classList.toggle('on', b.dataset.sz === sz));
+  try { localStorage.setItem('playerSize', sz); } catch (e) {}
+}
+$('szbtns').onclick = e => { if (e.target.dataset.sz) setSize(e.target.dataset.sz); };
+let savedSz = 'sz-m';
+try { savedSz = localStorage.getItem('playerSize') || 'sz-m'; } catch (e) {}
+setSize(savedSz);
+
+async function pollStatus() {
+  const st = await (await fetch('/api/status')).json();
+  if (st.state === 'ready') { $('devinfo').textContent = st.device.toUpperCase() + ' 就绪'; $('s-dev').textContent = st.device.toUpperCase(); }
+  else if (st.state === 'error') { $('devinfo').textContent = '模型加载失败'; }
+  else { $('devinfo').textContent = '模型加载中…'; setTimeout(pollStatus, 2000); }
+}
+
+async function refreshVideos(keepPolling = true) {
+  const vids = await (await fetch('/api/videos')).json();
+  const el = $('vlist');
+  el.innerHTML = vids.map(v => {
+    const st = v.status === 'ready' ? `${fmt(v.duration)} · ${v.clips.length} 段`
+             : v.status === 'error' ? '索引失败'
+             : `${v.stage} ${v.progress || 0}%`;
+    const thumb = v.status === 'ready' ? `<img src="/media/${v.id}/thumbs/0000.jpg">` : `<img>`;
+    return `<div class="vcard ${cur && cur.id === v.id ? 'active' : ''}" data-id="${v.id}" data-ready="${v.status==='ready'}">${thumb}<div class="nm">${v.name}<div class="st">${st}</div></div></div>`;
+  }).join('') || '<div class="muted">暂无视频，先上传一个。</div>';
+  if (!cur) { const first = vids.find(v => v.status === 'ready'); if (first) selectVideo(first.id); }
+  if (keepPolling && vids.some(v => v.status === 'processing')) setTimeout(refreshVideos, 2500);
+}
+
+$('vlist').onclick = e => {
+  const card = e.target.closest('.vcard');
+  if (card && card.dataset.ready === 'true') selectVideo(card.dataset.id);
+};
+
+async function selectVideo(id) {
+  cur = await (await fetch('/api/videos/' + id)).json();
+  lastScores = null; segEnd = null;
+  $('seginfo').textContent = '';
+  $('player').src = `/media/${id}/source.mp4`;
+  $('s-clips').textContent = cur.clips.length;
+  $('rlist').innerHTML = '<div class="muted">输入描述后点「检索这段视频」。</div>';
+  drawBars();
+  refreshVideos(false);
+}
+
+function drawBars() {
+  const n = cur ? cur.clips.length : 0;
+  // 长视频按桶聚合，最多画 240 根柱子（否则几千根会把页面横向撑爆）
+  const MAXB = 240;
+  const bucket = Math.max(1, Math.ceil(n / MAXB));
+  const bars = [];
+  const mx = lastScores ? Math.max(...lastScores) : 0;
+  const mn = lastScores ? Math.min(...lastScores) : 0;
+  for (let lo = 0; lo < n; lo += bucket) {
+    const hi = Math.min(n, lo + bucket);
+    let best = lo, h = 12, cls = 'bar';
+    if (lastScores) {
+      for (let j = lo + 1; j < hi; j++) if (lastScores[j] > lastScores[best]) best = j;
+      h = 12 + 88 * (lastScores[best] - mn) / (mx - mn + 1e-9);
+      if (lastScores[best] >= mx - 1e-9) cls += ' top';
+      else if (h > 55) cls += ' hot';
+    }
+    bars.push(`<div class="${cls}" data-i="${best}" style="height:${h}%" title="${fmt(cur.clips[lo].start)} - ${fmt(cur.clips[hi - 1].end)}${lastScores ? ' · ' + lastScores[best].toFixed(3) : ''}"></div>`);
+  }
+  $('bars').innerHTML = bars.join('');
+}
+$('bars').onclick = e => { const b = e.target.closest('.bar'); if (b) playSeg(+b.dataset.i); };
+
+function playSeg(i) {
+  const c = cur.clips[i];
+  const p = $('player');
+  p.currentTime = c.start; segEnd = c.end;
+  p.play();
+  $('seginfo').textContent = `▶ 正在播放片段 #${i + 1}: ${fmt(c.start)} - ${fmt(c.end)}`;
+  document.querySelectorAll('#bars .bar').forEach((b, j) => b.classList.toggle('playing', j === i));
+}
+$('player').addEventListener('timeupdate', () => {
+  if (segEnd !== null && $('player').currentTime >= segEnd) { $('player').pause(); segEnd = null; }
+});
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q || !cur) return;
+  $('go').disabled = true; $('go').textContent = '编码 query 中…';
+  try {
+    const r = await fetch('/api/search', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({video_id: cur.id, query: q, top_k: 5}),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    const data = await r.json();
+    lastScores = data.scores;
+    $('s-enc').textContent = data.encode_ms + ' ms';
+    drawBars();
+    $('rtitle').textContent = `「${q}」的检索结果（点击行跳转）`;
+    const mx = data.results[0].score;
+    $('rlist').innerHTML = data.results.map((res, k) => `
+      <div class="rrow ${k === 0 ? 'best' : ''}" data-i="${res.index}">
+        <div class="rank">#${k + 1}</div>
+        <img src="/media/${cur.id}/thumbs/${String(res.index).padStart(4,'0')}.jpg">
+        <div class="t">${fmt(res.start)} - ${fmt(res.end)}
+          <div class="scorebar"><i style="width:${Math.max(4, res.score / mx * 100)}%"></i></div>
+        </div>
+        <div class="sc">${res.score.toFixed(4)}</div>
+      </div>`).join('');
+    document.querySelectorAll('.rrow').forEach(row => row.onclick = () => playSeg(+row.dataset.i));
+    playSeg(data.results[0].index);
+  } catch (err) {
+    $('rlist').innerHTML = `<div class="muted">检索失败：${err.message}</div>`;
+  } finally {
+    $('go').disabled = false; $('go').textContent = '检索这段视频';
+  }
+}
+$('go').onclick = doSearch;
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSearch(); } });
+
+$('file').onchange = async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  await fetch('/api/upload', {method: 'POST', body: fd});
+  $('file').value = '';
+  refreshVideos();
+};
+
+pollStatus();
+refreshVideos();
+</script>
+</body>
+</html>

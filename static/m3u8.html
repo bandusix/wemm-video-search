@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>WeMM · m3u8 流式索引 PoC</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="https://cdn.jsdelivr.net/npm/hls.js@1/dist/hls.min.js"></script>
+<style>
+  :root {
+    --bg: #0a0d0b; --panel: #121712; --panel2: #182018;
+    --border: #263a28; --text: #e7f2e8; --dim: #86a08a;
+    --accent: #22c55e; --accent2: #4ade80;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: -apple-system, "PingFang SC", "Helvetica Neue", sans-serif; min-height: 100vh; }
+  .wrap { max-width: 1200px; margin: 0 auto; padding: 28px 24px 60px; }
+  header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  h1 { font-size: 28px; font-weight: 800; }
+  h1 .hl { color: var(--accent2); }
+  .brand { color: var(--dim); font-size: 13px; }
+  .sub { color: var(--dim); font-size: 13px; margin-bottom: 20px; }
+
+  .grid { display: grid; grid-template-columns: 1.5fr 1fr; gap: 18px; }
+  @media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; }
+  .panel h3 { font-size: 13px; color: var(--dim); font-weight: 600; margin-bottom: 10px; letter-spacing: 1px; }
+  .phead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .phead h3 { margin: 0; }
+  .szbtns { display: flex; gap: 4px; }
+  .szbtns button { background: var(--panel2); border: 1px solid var(--border); color: var(--dim); font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer; }
+  .szbtns button.on { color: #06130a; background: var(--accent); border-color: var(--accent); font-weight: 700; }
+
+  video#player { display: block; margin: 0 auto; border-radius: 10px; background: #000; aspect-ratio: 16/9; width: 100%; }
+  .panel.sz-s video#player { max-width: 420px; }
+  .panel.sz-m video#player { max-width: 640px; }
+  #seginfo { font-size: 12px; color: var(--dim); margin-top: 8px; min-height: 16px; }
+
+  #bars { display: flex; align-items: flex-end; gap: 2px; height: 64px; margin-top: 10px; cursor: pointer; }
+  #bars .bar { flex: 1 1 0; min-width: 0; background: #24331f; border-radius: 2px 2px 0 0; transition: height .25s, background .25s; height: 12%; }
+  #bars .bar.hot { background: var(--accent); }
+  #bars .bar.top { background: #bbf7d0; }
+  #bars .bar.playing { outline: 1px solid #fff; }
+
+  .vlist { display: flex; flex-direction: column; gap: 8px; }
+  .vcard { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; cursor: pointer; background: var(--panel2); }
+  .vcard:hover { border-color: var(--accent); }
+  .vcard.active { border-color: var(--accent); background: #16241a; }
+  .vcard img { width: 64px; height: 36px; object-fit: cover; border-radius: 6px; background: #000; }
+  .vcard .nm { font-size: 13px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .vcard .st { font-size: 11px; color: var(--dim); }
+  .tag { font-size: 10px; padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border); color: var(--accent2); margin-left: 6px; }
+
+  input[type=text], textarea { width: 100%; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; color: var(--text); padding: 10px; font-size: 13px; font-family: inherit; }
+  input[type=text]:focus, textarea:focus { outline: none; border-color: var(--accent); }
+  textarea { height: 56px; resize: none; font-size: 14px; }
+  .addrow { display: flex; gap: 8px; margin-top: 10px; }
+  .addrow input { flex: 1; }
+  .btn { padding: 9px 14px; background: var(--accent); color: #06130a; font-size: 13px; font-weight: 700; border: none; border-radius: 10px; cursor: pointer; white-space: nowrap; }
+  .btn:hover { filter: brightness(1.1); }
+  .btn:disabled { background: #2a3a2c; color: var(--dim); cursor: default; }
+  .upl { margin-top: 8px; }
+  .upl input { display: none; }
+  .upl label { display: block; text-align: center; padding: 8px; border: 1px dashed var(--border); border-radius: 10px; color: var(--dim); font-size: 12px; cursor: pointer; }
+  .upl label:hover { color: var(--accent2); border-color: var(--accent); }
+
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+  .chip { font-size: 12px; color: var(--accent2); background: #16241a; border: 1px solid var(--border); padding: 4px 10px; border-radius: 999px; cursor: pointer; }
+  .chip:hover { border-color: var(--accent); }
+  button#go { width: 100%; padding: 12px; background: var(--accent); color: #06130a; font-size: 15px; font-weight: 800; border: none; border-radius: 10px; cursor: pointer; }
+  button#go:disabled { background: #2a3a2c; color: var(--dim); }
+
+  .stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin: 18px 0; }
+  @media (max-width: 900px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+  .stat { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px 14px; }
+  .stat .v { font-size: 20px; font-weight: 800; color: var(--accent2); }
+  .stat .k { font-size: 11px; color: var(--dim); margin-top: 2px; }
+
+  .rlist { display: flex; flex-direction: column; gap: 8px; }
+  .rrow { display: flex; align-items: center; gap: 12px; padding: 8px 12px; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; cursor: pointer; }
+  .rrow:hover { border-color: var(--accent); }
+  .rrow.best { border-color: var(--accent); background: #16241a; }
+  .rrow img { width: 96px; height: 54px; object-fit: cover; border-radius: 6px; background: #000; }
+  .rrow .t { font-size: 14px; font-weight: 600; flex: 1; }
+  .rrow .rank { font-size: 12px; color: var(--dim); width: 28px; }
+  .rrow .sc { font-size: 15px; font-weight: 700; color: var(--accent2); }
+  .scorebar { height: 4px; background: #24331f; border-radius: 2px; margin-top: 5px; width: 140px; }
+  .scorebar i { display: block; height: 100%; background: var(--accent); border-radius: 2px; }
+  .muted { color: var(--dim); font-size: 13px; padding: 12px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>m3u8 <span class="hl">流式索引</span> PoC</h1>
+    <div class="brand">WeMM-Embedding 2B · <span id="devinfo">加载中…</span> · <a href="http://localhost:8765" style="color:var(--dim)">v1↗</a></div>
+  </header>
+  <div class="sub">验证：在线 m3u8 不下载全片 —— 自动选最低码率流 · 逐窗口流式拉取 · 只解关键帧（≤8 帧/窗）</div>
+
+  <div class="grid">
+    <div>
+      <div class="panel" id="ppanel">
+        <div class="phead">
+          <h3>播放器（在线流直接播原始 m3u8）</h3>
+          <div class="szbtns" id="szbtns">
+            <button data-sz="sz-s">小</button>
+            <button data-sz="sz-m">中</button>
+            <button data-sz="sz-l">大</button>
+          </div>
+        </div>
+        <video id="player" controls muted></video>
+        <div id="seginfo"></div>
+        <div id="bars" title="每格 = 一个窗口，高度 = 相似度，点击跳转"></div>
+      </div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div class="panel">
+        <h3>视频库（点击切换）</h3>
+        <div class="vlist" id="vlist"></div>
+        <div class="addrow">
+          <input type="text" id="m3u8url" placeholder="粘贴在线 m3u8 链接…">
+          <button class="btn" id="addbtn">合入索引</button>
+        </div>
+        <input type="text" id="referer" placeholder="来源页地址（选填，防盗链站点需要，如 https://cinejoy.to/）" style="margin-top:8px">
+        <div class="muted" style="padding:4px 0;font-size:11px">遇到 403 时填来源页地址，服务端会带上 Referer/Origin 再拉取</div>
+        <div class="upl">
+          <input type="file" id="file" accept="video/*">
+          <label for="file">或上传本地视频文件</label>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h3>用文字描述检索画面</h3>
+        <textarea id="q" placeholder="例：兔子从洞里钻出来 / a squirrel flying"></textarea>
+        <div class="chips" id="chips"></div>
+        <button id="go">检索这段视频</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="v" id="s-clips">–</div><div class="k">窗口数（每窗 8s）</div></div>
+    <div class="stat"><div class="v" id="s-bw">–</div><div class="k">索引用码率（最低档）</div></div>
+    <div class="stat"><div class="v" id="s-mb">–</div><div class="k">预计拉取流量</div></div>
+    <div class="stat"><div class="v" id="s-rt">–</div><div class="k">索引实时率（x 倍速）</div></div>
+    <div class="stat"><div class="v" id="s-enc">–</div><div class="k">query 编码耗时</div></div>
+  </div>
+
+  <div class="panel">
+    <h3 id="rtitle">检索结果（点击行跳转到对应时间段）</h3>
+    <div class="rlist" id="rlist"><div class="muted">等待索引完成后，输入描述点「检索这段视频」。</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let cur = null, lastScores = null, segEnd = null, hls = null;
+
+const CHIPS = ["兔子从洞里钻出来", "a squirrel gliding in the air", "三只小动物在树上", "butterfly"];
+$('chips').innerHTML = CHIPS.map(c => `<span class="chip">${c}</span>`).join('');
+$('chips').onclick = e => { if (e.target.classList.contains('chip')) { $('q').value = e.target.textContent; doSearch(); } };
+
+function fmt(s) {
+  s = Math.floor(s);
+  const mm = String(Math.floor(s / 60) % 60).padStart(2, '0'), ss = String(s % 60).padStart(2, '0');
+  return s >= 3600 ? `${Math.floor(s / 3600)}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+function setSize(sz) {
+  $('ppanel').classList.remove('sz-s', 'sz-m', 'sz-l');
+  $('ppanel').classList.add(sz);
+  document.querySelectorAll('#szbtns button').forEach(b => b.classList.toggle('on', b.dataset.sz === sz));
+  try { localStorage.setItem('playerSize2', sz); } catch (e) {}
+}
+$('szbtns').onclick = e => { if (e.target.dataset.sz) setSize(e.target.dataset.sz); };
+let sv = 'sz-m'; try { sv = localStorage.getItem('playerSize2') || 'sz-m'; } catch (e) {}
+setSize(sv);
+
+async function pollStatus() {
+  const st = await (await fetch('/api/status')).json();
+  if (st.state === 'ready') { $('devinfo').textContent = st.device.toUpperCase() + ' 就绪'; }
+  else if (st.state === 'error') { $('devinfo').textContent = '模型加载失败'; }
+  else { $('devinfo').textContent = '模型加载中…'; setTimeout(pollStatus, 2000); }
+}
+
+async function refreshVideos(keepPolling = true) {
+  const vids = await (await fetch('/api/videos')).json();
+  $('vlist').innerHTML = vids.map(v => {
+    const tag = v.source_type === 'hls' ? '<span class="tag">HLS</span>' : '<span class="tag">本地</span>';
+    const st = v.status === 'ready' ? `${fmt(v.duration)} · ${v.clips.length} 窗 · 实时率 ${v.realtime_factor || '–'}x`
+             : v.status === 'error' ? `失败: ${(v.error || '').slice(0, 40)}`
+             : `${v.stage} ${v.progress || 0}%`;
+    const thumb = v.status === 'ready' ? `<img src="/media/${v.id}/thumbs/0000.jpg">` : `<img>`;
+    return `<div class="vcard ${cur && cur.id === v.id ? 'active' : ''}" data-id="${v.id}" data-ready="${v.status === 'ready'}">${thumb}<div class="nm">${v.name}${tag}<div class="st">${st}</div></div></div>`;
+  }).join('') || '<div class="muted">暂无视频，粘贴一个 m3u8 链接试试。</div>';
+  if (!cur) { const first = vids.find(v => v.status === 'ready'); if (first) selectVideo(first.id); }
+  if (keepPolling && vids.some(v => v.status === 'processing')) setTimeout(refreshVideos, 2500);
+}
+
+$('vlist').onclick = e => {
+  const card = e.target.closest('.vcard');
+  if (card && card.dataset.ready === 'true') selectVideo(card.dataset.id);
+};
+
+function loadPlayer(v) {
+  const p = $('player');
+  if (hls) { hls.destroy(); hls = null; }
+  if (v.source_type === 'hls') {
+    // 一律走服务端代理：注入 Referer/Origin 应对防盗链，同时绕过浏览器跨域限制
+    const src = `/api/proxy?u=${encodeURIComponent(v.playback_url)}&vid=${v.id}`;
+    if (window.Hls && Hls.isSupported()) {
+      hls = new Hls();
+      hls.loadSource(src);
+      hls.attachMedia(p);
+    } else {
+      p.src = src;  // Safari 原生 HLS
+    }
+  } else {
+    p.src = `/media/${v.id}/source.mp4`;
+  }
+}
+
+async function selectVideo(id) {
+  cur = await (await fetch('/api/videos/' + id)).json();
+  lastScores = null; segEnd = null;
+  $('seginfo').textContent = '';
+  loadPlayer(cur);
+  $('s-clips').textContent = cur.clips.length;
+  $('s-bw').textContent = cur.bandwidth ? Math.round(cur.bandwidth / 1000) + ' kbps' : '–';
+  $('s-mb').textContent = cur.est_mb ? cur.est_mb + ' MB' : '–';
+  $('s-rt').textContent = cur.realtime_factor ? cur.realtime_factor + 'x' : '–';
+  $('rlist').innerHTML = '<div class="muted">输入描述后点「检索这段视频」。</div>';
+  drawBars();
+  refreshVideos(false);
+}
+
+function drawBars() {
+  const n = cur ? cur.clips.length : 0;
+  const MAXB = 240;
+  const bucket = Math.max(1, Math.ceil(n / MAXB));
+  const bars = [];
+  const mx = lastScores ? Math.max(...lastScores) : 0;
+  const mn = lastScores ? Math.min(...lastScores) : 0;
+  for (let lo = 0; lo < n; lo += bucket) {
+    const hi = Math.min(n, lo + bucket);
+    let best = lo, h = 12, cls = 'bar';
+    if (lastScores) {
+      for (let j = lo + 1; j < hi; j++) if (lastScores[j] > lastScores[best]) best = j;
+      h = 12 + 88 * (lastScores[best] - mn) / (mx - mn + 1e-9);
+      if (lastScores[best] >= mx - 1e-9) cls += ' top';
+      else if (h > 55) cls += ' hot';
+    }
+    bars.push(`<div class="${cls}" data-i="${best}" style="height:${h}%" title="${fmt(cur.clips[lo].start)} - ${fmt(cur.clips[hi - 1].end)}${lastScores ? ' · ' + lastScores[best].toFixed(3) : ''}"></div>`);
+  }
+  $('bars').innerHTML = bars.join('');
+}
+$('bars').onclick = e => { const b = e.target.closest('.bar'); if (b) playSeg(+b.dataset.i); };
+
+function playSeg(i) {
+  const c = cur.clips[i];
+  const p = $('player');
+  p.currentTime = c.start; segEnd = c.end;
+  p.play();
+  $('seginfo').textContent = `▶ 正在播放窗口 #${i + 1}: ${fmt(c.start)} - ${fmt(c.end)}` + (c.frames ? `（索引用了 ${c.frames} 个关键帧）` : '');
+  document.querySelectorAll('#bars .bar').forEach(b => b.classList.toggle('playing', +b.dataset.i === i));
+}
+$('player').addEventListener('timeupdate', () => {
+  if (segEnd !== null && $('player').currentTime >= segEnd) { $('player').pause(); segEnd = null; }
+});
+
+async function doSearch() {
+  const q = $('q').value.trim();
+  if (!q || !cur) return;
+  $('go').disabled = true; $('go').textContent = '编码 query 中…';
+  try {
+    const r = await fetch('/api/search', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({video_id: cur.id, query: q, top_k: 5}),
+    });
+    if (!r.ok) throw new Error((await r.json()).detail || r.status);
+    const data = await r.json();
+    lastScores = data.scores;
+    $('s-enc').textContent = data.encode_ms + ' ms';
+    drawBars();
+    $('rtitle').textContent = `「${q}」的检索结果（点击行跳转）`;
+    const mx = data.results[0].score;
+    $('rlist').innerHTML = data.results.map((res, k) => `
+      <div class="rrow ${k === 0 ? 'best' : ''}" data-i="${res.index}">
+        <div class="rank">#${k + 1}</div>
+        <img src="/media/${cur.id}/thumbs/${String(res.index).padStart(4, '0')}.jpg">
+        <div class="t">${fmt(res.start)} - ${fmt(res.end)}
+          <div class="scorebar"><i style="width:${Math.max(4, res.score / mx * 100)}%"></i></div>
+        </div>
+        <div class="sc">${res.score.toFixed(4)}</div>
+      </div>`).join('');
+    document.querySelectorAll('.rrow').forEach(row => row.onclick = () => playSeg(+row.dataset.i));
+    playSeg(data.results[0].index);
+  } catch (err) {
+    $('rlist').innerHTML = `<div class="muted">检索失败：${err.message}</div>`;
+  } finally {
+    $('go').disabled = false; $('go').textContent = '检索这段视频';
+  }
+}
+$('go').onclick = doSearch;
+$('q').addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); doSearch(); } });
+
+async function doAdd(url, referer) {
+  const r = await fetch('/api/add_m3u8', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url, referer}),
+  });
+  if (!r.ok) throw new Error((await r.json()).detail || r.status);
+  $('m3u8url').value = '';
+  refreshVideos();
+}
+
+$('addbtn').onclick = async () => {
+  const url = $('m3u8url').value.trim();
+  const referer = $('referer').value.trim();
+  if (!url) return;
+  $('addbtn').disabled = true; $('addbtn').textContent = '判重中…';
+  try {
+    const chk = await fetch('/api/check_duplicate', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({url, referer}),
+    });
+    if (!chk.ok) throw new Error((await chk.json()).detail || chk.status);
+    const d = await chk.json();
+    if (d.duplicate) {
+      const tip = `⚠️ 判定为重复视频\n\n` +
+        `与已索引的《${d.name}》是同一个\n` +
+        `依据：${d.reason}\n` +
+        `判重耗时：${d.checked_ms}ms` + (d.phash_sampled ? `（采样 ${d.phash_sampled} 帧）` : '（零媒体下载）') +
+        `\n\n跳过索引可节省全部抽帧+编码成本。\n\n点「确定」= 仍然重复索引，点「取消」= 跳过。`;
+      if (!confirm(tip)) { $('m3u8url').value = ''; return; }
+    }
+    await doAdd(url, referer);
+  } catch (err) { alert('操作失败：' + err.message); }
+  finally { $('addbtn').disabled = false; $('addbtn').textContent = '合入索引'; }
+};
+
+$('file').onchange = async () => {
+  const f = $('file').files[0];
+  if (!f) return;
+  const fd = new FormData(); fd.append('file', f);
+  await fetch('/api/upload', {method: 'POST', body: fd});
+  $('file').value = '';
+  refreshVideos();
+};
+
+pollStatus();
+refreshVideos();
+</script>
+</body>
+</html>
