@@ -12,7 +12,8 @@ English · [中文说明 ↓](#中文说明)
 
 - **Text → video-moment retrieval**: the video is sliced into windows, each encoded to a 2048-dim vector; a text query is encoded and ranked by cosine similarity, locating the time range in milliseconds.
 - **Two input types**: local video files, or **online m3u8 / HLS streams** (indexed by streaming frames, without downloading the whole file).
-- **No full download for online streams**: auto-picks the lowest-bitrate variant, decodes keyframes only, and fetches segments in parallel — a 2.5-hour movie indexes in a few minutes.
+- **No full download for online streams**: auto-picks the lowest-bitrate variant, decodes keyframes only, and fetches segments in parallel — a 2.5-hour movie indexes in under 6 minutes.
+- **No blind spots**: when a stream's keyframe interval exceeds the window length, the windows in between would be unsearchable; those gaps are filled by decoding one extra frame while the segment is still local, so coverage is 100% and every second of the timeline is reachable.
 - **Duplicate detection**: manifest fingerprint (defeats token rotation, zero download) + sampled-frame perceptual hash (catches the same title at a different resolution), avoiding redundant indexing.
 - **Referer-gated streams**: supply the origin page URL and the server injects `Referer`/`Origin`; a built-in HLS proxy lets the browser play them too.
 - **Local web UI**: video library switcher, similarity timeline bar chart, click-to-seek result list.
@@ -62,8 +63,23 @@ text query ──► WeMM encode ──► cosine sim vs all windows ──► t
 Key optimizations for online m3u8 (measured in the PoC):
 
 - **No full download**: parse the master playlist, pick the lowest-bitrate variant, index only that.
-- **Keyframes only**: `-skip_frame nokey` cuts decode work by an order of magnitude.
-- **Parallel segment fetch**: on public CDNs the bottleneck is per-segment latency; 16 concurrent downloads beat ffmpeg's single-connection sequential read by ~**3.6x** (a 39-min movie went from 300 s → 83 s of extraction).
+- **Keyframes only**: `-skip_frame nokey`, decoded locally per segment.
+- **Parallel segment fetch**: on public CDNs the bottleneck is per-segment latency, not bandwidth (measured: pure download 34 s vs 0.18 s of CPU). 16 concurrent downloads beat ffmpeg's single-connection sequential read by ~**3.6x**.
+- **Fingerprints reuse the downloaded segments**: the dedup fingerprint needs 16 frames at fixed timestamps. Seeking them over the network cost **101.7 s**; taking them from segments already on disk costs **~0.75 s** — a 135x difference for an identical result.
+- **Gap filling for 100% coverage**: a window with no keyframe is unsearchable. Those windows get one extra locally-decoded frame (+0.01 s per segment), lifting coverage from 77% to 100%.
+
+Measured on a 2.4-hour film (Apple M5 Max, MPS):
+
+| Stage | Before | After |
+|---|---|---|
+| Extraction | 146 s | 147 s (now includes fingerprints) |
+| Dedup fingerprint | ~100 s | folded into extraction |
+| Clip synthesis | ~210 s (serial) | ~10 s (parallel) |
+| Vector encoding | 125 s | 171 s (+30% windows from gap filling) |
+| **Total** | **581 s** | **336 s** |
+| **Coverage** | **77%** | **100%** |
+
+Two optimizations were tried and rejected by measurement: larger encode batches are *slower* on MPS (batch 4 is optimal), and feeding images instead of video clips is 7x faster but retrieves noticeably worse.
 - **Playback from the original stream**: on a hit, hls.js seeks the original m3u8 — no transcoded copies.
 
 Three-layer dedup (cheapest first): business `content_id` → manifest fingerprint (hash of segment-duration sequence, zero download) → sampled-frame perceptual hash (dHash, robust to resolution/bitrate; measured 0.99 same-title vs 0.50 different-title).
@@ -90,7 +106,8 @@ Three-layer dedup (cheapest first): business `content_id` → manifest fingerpri
 
 - **文字 → 视频时刻检索**：视频按窗口切片编码成 2048 维向量，文字 query 编码后余弦相似度排序，毫秒级定位时间段。
 - **两种输入**：本地视频文件，或**在线 m3u8 / HLS 流**（不下载全片，流式抽帧索引）。
-- **在线流不下载全片**：自动选最低码率变体、只解关键帧、并行拉分片，一部 2.5h 电影约几分钟索引完。
+- **在线流不下载全片**：自动选最低码率变体、只解关键帧、并行拉分片，一部 2.5h 电影 6 分钟内索引完。
+- **没有检索盲区**：当流的关键帧间隔大于窗口长度时，中间那些窗口本来搜不到；趁分片还在本地补解一帧填上，覆盖率 100%，时间轴上每一秒都可检索。
 - **重复视频判重**：清单指纹（挡 token 轮换，零下载）+ 抽样帧感知指纹（挡同片不同清晰度），避免重复索引。
 - **防盗链 / 需要 Referer 的流**：可填来源页地址，服务端注入 Referer/Origin；内置 HLS 代理让浏览器也能播放。
 - **本地 Web 界面**：视频库切换、时间轴相似度柱状图、结果列表点击跳播。
@@ -130,7 +147,27 @@ uv pip install --python .venv/bin/python torch torchvision \
 
 ### 工作原理
 
-在线 m3u8 的关键优化（PoC 实测）：不下载全片（选最低码率变体）、只解关键帧（`-skip_frame nokey`）、并行拉分片（16 并发比 ffmpeg 单连接顺序读快约 **3.6x**，39min 电影抽帧 300s → 83s）、播放走原始流（hls.js 直接 seek，无转码副本）。
+在线 m3u8 的关键优化（均为实测）：
+
+- **不下载全片**：解析主清单选最低码率变体，只索引它
+- **只解关键帧**：`-skip_frame nokey`，逐分片本地解码
+- **并行拉分片**：公网 CDN 的瓶颈是每分片延迟而非带宽（实测纯下载 34s、CPU 仅 0.18s），16 并发比 ffmpeg 单连接顺序读快约 **3.6x**
+- **判重指纹复用已下载分片**：指纹需要固定时刻的 16 帧，跨公网 seek 要 **101.7s**，从本地已有分片取只要 **~0.75s**，结果相同但差 135 倍
+- **补解非关键帧达成 100% 覆盖**：没有关键帧的窗口检索不到，补解一帧填上（每分片 +0.01s），覆盖率 77% → 100%
+- **播放走原始流**：hls.js 直接 seek 原 m3u8，不产生转码副本
+
+一部 2.4 小时影片实测（Apple M5 Max，MPS）：
+
+| 阶段 | 优化前 | 优化后 |
+|---|---|---|
+| 抽帧 | 146s | 147s（已含判重指纹） |
+| 判重指纹 | ~100s | 折入抽帧 |
+| 合成片段 | ~210s（串行） | ~10s（并行） |
+| 编码向量 | 125s | 171s（补帧后窗口 +30%） |
+| **总计** | **581s** | **336s** |
+| **覆盖率** | **77%** | **100%** |
+
+另有两项优化被实测否决：MPS 上加大编码 batch 反而更慢（batch=4 最优）；用图片替代视频 clip 快 7 倍但检索质量明显下降。
 
 判重三层（成本从低到高）：业务 `content_id` → 清单指纹（分片时长序列 hash，零下载）→ 抽样帧感知指纹（dHash，实测同片 0.99、异片 0.50）。
 
