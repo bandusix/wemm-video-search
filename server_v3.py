@@ -6,6 +6,7 @@
 - 重复视频判重（清单指纹 + 抽样帧感知指纹）
 - 防盗链流的 Referer 注入 + 浏览器 HLS 代理播放
 """
+import bisect
 import hashlib
 import json
 import os
@@ -39,6 +40,8 @@ PHASH_K = 16  # 判重指纹采样点数：存储与预检必须一致，都按 
 # 16 是甜点区（3.3x 提速、对第三方 CDN 温和不易触发限流）；自有 OSS/内网可上调到 24~32。
 # 解码开销可忽略（8并发全流水线 22.9s vs 纯下载 22.1s），瓶颈纯在下载。
 HLS_FETCH_WORKERS = 16
+# 合成微型 clip / 缩略图的并发数：纯本地 CPU（每片 ffmpeg 一次 spawn），按核数并行
+CLIP_WORKERS = max(4, min(16, (os.cpu_count() or 8)))
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
 
@@ -331,7 +334,7 @@ def _download_bytes(url, referer, dest, timeout=45):
 
 
 def _parse_segments(media_url, media_text):
-    """从媒体清单解析 (idx, 绝对URL, 起始秒) 列表 + 可选 EXT-X-MAP init 段 URL。"""
+    """从媒体清单解析 (idx, 绝对URL, 起始秒, 时长) 列表 + 可选 EXT-X-MAP init 段 URL。"""
     init_url = None
     mm = re.search(r'#EXT-X-MAP:URI="([^"]+)"', media_text)
     if mm:
@@ -343,34 +346,51 @@ def _parse_segments(media_url, media_text):
             dm = re.match(r"#EXTINF:([\d.]+)", s)
             dur = float(dm.group(1)) if dm else 0.0
         elif s and not s.startswith("#"):
-            segs.append((len(segs), urllib.parse.urljoin(media_url, s), t))
-            t += dur or 0.0
+            d = dur or 0.0
+            segs.append((len(segs), urllib.parse.urljoin(media_url, s), t, d))
+            t += d
             dur = None
     return segs, init_url
 
 
 def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
-                                    progress_cb=None, referer=None):
+                                    progress_cb=None, referer=None, fp_k=PHASH_K):
     """公网 m3u8 专用：并行下载分片、各自本地抽关键帧。瓶颈是 CDN 每分片延迟，
     并发拉取比 ffmpeg 单连接顺序读快 ~5x（实测）。解码用 -skip_frame nokey（本地、极廉价）。
-    返回 (by_win, timed)，与单趟版签名一致。"""
+
+    顺带产出判重指纹帧：分片已在本地，对覆盖 (i+0.5)/fp_k 时间点的分片就地精确 seek 取帧，
+    与"跨公网重新 seek 16 次"等价但快 ~135x（实测 101.7s → 0.75s）。
+    返回 (by_win, timed, fp_frames)，fp_frames 为定长 fp_k 列表（缺失位 None）。"""
     out_dir.mkdir(parents=True, exist_ok=True)
     seg_dir = out_dir / "seg"
+    fp_dir = out_dir / "fp"
     seg_dir.mkdir(exist_ok=True)
+    fp_dir.mkdir(exist_ok=True)
     segs, init_url = _parse_segments(media_url, media_text)
     if not segs:
-        return {}, []
+        return {}, [], [None] * fp_k
     init_path = None
     if init_url:  # fMP4：init 段需拼在每个分片前才能解码
         init_path = out_dir / "init.bin"
         _download_bytes(init_url, referer, init_path)
 
+    # 把每个指纹时间点分派给覆盖它的分片（就近落到最后一个 start <= target 的分片）
+    fp_targets = {}  # seg_idx -> [(fp_i, 段内偏移秒), ...]
+    starts = [s[2] for s in segs]
+    for i in range(fp_k):
+        target = duration * (i + 0.5) / fp_k
+        # 取最后一个 start <= target 的分片（即覆盖该时刻的分片）
+        pos = bisect.bisect_right(starts, target) - 1
+        pos = min(max(pos, 0), len(segs) - 1)
+        fp_targets.setdefault(segs[pos][0], []).append((i, max(0.0, target - segs[pos][2])))
+
     done = [0]
     lock = threading.Lock()
     results = {}
+    fp_frames = [None] * fp_k
 
     def _work(item):
-        idx, url, start = item
+        idx, url, start, _d = item
         raw = seg_dir / f"{idx:05d}.bin"
         if not _download_bytes(url, referer, raw):
             return
@@ -379,17 +399,36 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
             merged = seg_dir / f"{idx:05d}.m4s"
             merged.write_bytes(init_path.read_bytes() + raw.read_bytes())
             dec_in = merged
-        subprocess.run(
-            ["ffmpeg", "-y", "-loglevel", "error", "-skip_frame", "nokey",
-             "-i", str(dec_in), "-vf", "scale=-2:360", "-fps_mode", "vfr",
+        # showinfo 打印每帧 pts_time，用于把帧按「真实时间」归窗（不能按分片起点，否则
+        # 同段内靠后的帧会被标到前一个窗口，且没有分片起点落入的窗口会整个丢失）
+        pr = subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "info", "-skip_frame", "nokey",
+             "-i", str(dec_in), "-vf", "scale=-2:360,showinfo", "-fps_mode", "vfr",
              "-q:v", "5", "-frames:v", str(MAX_FRAMES), str(seg_dir / f"{idx:05d}_%02d.jpg")],
-            check=False, timeout=60)
+            check=False, timeout=60, capture_output=True, text=True)
         frames = sorted(seg_dir.glob(f"{idx:05d}_*.jpg"))
+        pts = [float(m) for m in re.findall(r"pts_time:([\d.]+)", pr.stderr or "")]
+        # TS 分片保留原始流 PTS、fMP4 从 0 起：统一减去首帧 pts 再加分片起始时间
+        base = pts[0] if pts else 0.0
+        ftimes = [start + (p - base) for p in pts[:len(frames)]]
+        if len(ftimes) < len(frames):  # showinfo 缺失时退化为分片起点
+            ftimes += [start] * (len(frames) - len(ftimes))
+        # 判重指纹：分片就在本地，精确 seek 取帧（毫秒级，零额外网络）
+        for fp_i, off in fp_targets.get(idx, []):
+            dst = fp_dir / f"{fp_i:02d}.jpg"
+            # 必须用「输出 seek」(-ss 放 -i 之后)：TS 分片保留原始流 PTS（如 start_time=50），
+            # 输入 seek 按绝对时间轴找、段内相对偏移会落空；输出 seek 按解码时间轴算才正确。
+            subprocess.run(
+                ["ffmpeg", "-y", "-loglevel", "error", "-i", str(dec_in),
+                 "-ss", f"{off:.3f}", "-frames:v", "1", "-vf", "scale=-2:120", str(dst)],
+                check=False, timeout=30)
+            if dst.exists():
+                fp_frames[fp_i] = dst
         raw.unlink(missing_ok=True)
         if dec_in != raw:
             dec_in.unlink(missing_ok=True)
         if frames:
-            results[idx] = (start, frames)
+            results[idx] = list(zip(ftimes, frames))
         with lock:
             done[0] += 1
             if progress_cb and done[0] % 5 == 0:
@@ -400,10 +439,23 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
 
     by_win, timed = {}, []
     for idx in sorted(results):
-        start, frames = results[idx]
-        by_win.setdefault(int(start // SEGMENT_SECONDS), []).extend(frames)
-        timed.extend((start, fp) for fp in frames)
-    return by_win, timed
+        for t, fp in results[idx]:  # 按每帧真实时间戳归窗
+            by_win.setdefault(int(t // SEGMENT_SECONDS), []).append(fp)
+            timed.append((t, fp))
+    timed.sort()
+    return by_win, timed, fp_frames
+
+
+def _make_thumb(src, dst, height=120):
+    """用 PIL 缩放已有帧生成缩略图（比 spawn 一次 ffmpeg 便宜一个数量级）。"""
+    try:
+        from PIL import Image
+        img = Image.open(src)
+        w = max(1, round(img.width * height / img.height))
+        img.convert("RGB").resize((w, height), Image.BILINEAR).save(dst, quality=85)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _frames_to_clip(frames, clip_path):
@@ -453,39 +505,48 @@ def _index_hls(vid, master_url, name, referer=None):
             _write_meta(vid, meta)
 
         # 公网 m3u8：并行下载分片抽帧（瓶颈在 CDN 每分片延迟，并发比单连接顺序读快 ~5x）
-        by_win, _ = _extract_all_keyframes_parallel(index_url, media_text, vdir / "frames",
-                                                    duration, _ext_progress, referer)
+        # 判重指纹帧由该步顺带产出（分片已在本地，就地精确 seek，省掉 16 次跨公网 seek）
+        by_win, _, fp_frames = _extract_all_keyframes_parallel(
+            index_url, media_text, vdir / "frames", duration, _ext_progress, referer)
         if not by_win:  # 并行失败则回退到经过验证的单趟顺序读
             by_win, _ = _extract_all_keyframes(index_url, vdir / "frames", duration,
                                                _ext_progress, referer)
+            fp_frames = None
         extract_seconds = round(time.time() - t_ext, 1)
         if not by_win:
             raise RuntimeError("未能从流中抽出任何帧，检查链接是否可访问 / 是否有防盗链")
 
-        # 感知指纹：按 (i+0.5)/K 精确时间 seek 采帧（与预检完全同一时刻，同片相似度 0.95+）
+        # 感知指纹：位置 i 恒对应 (i+0.5)/K 时间点，与预检侧同网格
         meta.update(stage="计算判重指纹")
         _write_meta(vid, meta)
-        fp_frames = _sample_frames_quick(index_url, duration, vdir / "fp", referer=referer)
+        if not fp_frames or not any(fp_frames):  # 回退路径才需要跨公网重采
+            fp_frames = _sample_frames_quick(index_url, duration, vdir / "fp", referer=referer)
         meta["phash"] = _phash_of_frames(fp_frames)
         _write_meta(vid, meta)
         shutil.rmtree(vdir / "fp", ignore_errors=True)
 
-        clips = []
-        for w in range(n):
-            frames = by_win.get(w)
-            if not frames:
-                continue
-            start = w * SEGMENT_SECONDS
-            cf = clips_dir / f"clip_{len(clips):04d}.mp4"
-            _frames_to_clip(frames, cf)
-            subprocess.run(["ffmpeg", "-y", "-loglevel", "error", "-i", str(frames[0]),
-                            "-vf", "scale=-2:120", str(thumbs_dir / f"{len(clips):04d}.jpg")],
-                           check=False, timeout=30)
-            clips.append({"start": start, "end": round(min(start + SEGMENT_SECONDS, duration), 2),
-                          "frames": len(frames)})
-            if w % 10 == 0:
-                meta.update(stage="合成片段", progress=round((w + 1) / n * 100))
-                _write_meta(vid, meta)
+        # 先定序（clip 下标 ↔ 向量顺序 ↔ 缩略图文件名必须确定），再并行合成
+        todo = [(w, by_win[w]) for w in range(n) if by_win.get(w)]
+        clips = [{"start": w * SEGMENT_SECONDS,
+                  "end": round(min(w * SEGMENT_SECONDS + SEGMENT_SECONDS, duration), 2),
+                  "frames": len(fr)} for w, fr in todo]
+        meta.update(stage="合成片段", progress=0)
+        _write_meta(vid, meta)
+        cdone = [0]
+        clock = threading.Lock()
+
+        def _make_clip(job):
+            ci, (_w, frames) = job
+            _frames_to_clip(frames, clips_dir / f"clip_{ci:04d}.mp4")
+            _make_thumb(frames[0], thumbs_dir / f"{ci:04d}.jpg")  # PIL 缩放，免一次进程调用
+            with clock:
+                cdone[0] += 1
+                if cdone[0] % 20 == 0:
+                    meta.update(stage="合成片段", progress=round(cdone[0] / len(todo) * 100))
+                    _write_meta(vid, meta)
+
+        with ThreadPoolExecutor(max_workers=CLIP_WORKERS) as ex:
+            list(ex.map(_make_clip, enumerate(todo)))
 
         while _model_status["state"] == "loading":
             meta.update(stage="等待模型加载")
