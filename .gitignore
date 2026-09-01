@@ -6,3 +6,6 @@ __pycache__/
 *.mp4
 *.m4v
 clips/
+webapp_data_v3/
+server_v3.log
+probe_*

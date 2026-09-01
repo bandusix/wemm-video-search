@@ -5,6 +5,7 @@
 """
 import hashlib
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -23,14 +24,14 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE = Path(__file__).parent
-DATA = BASE / "webapp_data_v2"
+DATA = BASE / os.environ.get("WEMM_DATA", "webapp_data_v2")  # 可用环境变量隔离多实例数据
 VIDEOS = DATA / "videos"
 VIDEOS.mkdir(parents=True, exist_ok=True)
 
 SEGMENT_SECONDS = 8
 MAX_FRAMES = 8
 PHASH_K = 16  # 判重指纹采样点数：存储与预检必须一致，都按 (i+0.5)/K 的时间分数取，保证逐位对齐
-# 公网 m3u8 分片并行下载并发数。实测 cinejoy(公网CDN,每分片~2.3s延迟)下载吞吐随并发扩展：
+# 公网 m3u8 分片并行下载并发数。实测某公网 CDN(每分片~2.3s延迟)下载吞吐随并发扩展：
 #   8并发 13.6x / 16并发 25.6x / 24并发 32.6x / 32并发 41x 实时（单趟顺序读仅 7.8x）。
 # 16 是甜点区（3.3x 提速、对第三方 CDN 温和不易触发限流）；自有 OSS/内网可上调到 24~32。
 # 解码开销可忽略（8并发全流水线 22.9s vs 纯下载 22.1s），瓶颈纯在下载。
