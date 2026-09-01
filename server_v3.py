@@ -1,7 +1,10 @@
-"""WeMM 视频时刻检索 v2 · m3u8 流式索引 PoC （端口 8766，与 v1 并存）
+"""WeMM 视频时刻检索 · 统一版 v3（本地文件 + 在线 m3u8 + 判重 + HLS 代理，默认端口 8765）
 
-验证点：在线 m3u8 不下载全片——选最低码率变体流、按窗口流式拉取、只解关键帧，
-每窗口抽 ≤8 帧关键帧合成微型 clip 送入模型编码。
+一个服务覆盖全部能力：
+- 本地视频文件上传检索
+- 在线 m3u8/HLS 流式索引（不下载全片、选最低码率、只解关键帧、并行拉分片）
+- 重复视频判重（清单指纹 + 抽样帧感知指纹）
+- 防盗链流的 Referer 注入 + 浏览器 HLS 代理播放
 """
 import hashlib
 import json
@@ -24,7 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 BASE = Path(__file__).parent
-DATA = BASE / os.environ.get("WEMM_DATA", "webapp_data_v2")  # 可用环境变量隔离多实例数据
+DATA = BASE / os.environ.get("WEMM_DATA", "webapp_data")  # 可用环境变量隔离多实例数据
 VIDEOS = DATA / "videos"
 VIDEOS.mkdir(parents=True, exist_ok=True)
 
@@ -70,7 +73,7 @@ def _ffmpeg_header_args(referer=None):
         args += ["-headers", "\r\n".join(lines) + "\r\n"]
     return args
 
-app = FastAPI(title="WeMM m3u8 PoC")
+app = FastAPI(title="WeMM Video Search (unified)")
 
 _model = None
 _model_lock = threading.Lock()
@@ -830,4 +833,4 @@ app.mount("/media", StaticFiles(directory=VIDEOS), name="media")
 
 @app.get("/")
 def index():
-    return FileResponse(BASE / "static" / "m3u8.html")
+    return FileResponse(BASE / "static" / "index.html")

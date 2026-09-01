@@ -12,9 +12,9 @@ RUN pip install --no-cache-dir \
     "transformers==5.2.0" "qwen-vl-utils==0.0.14" "sentence-transformers>=5.7.0" \
     "accelerate>=1.1.0" av torchcodec fastapi uvicorn python-multipart pillow
 
-COPY server_v2.py .
+COPY server_v3.py .
 COPY static/ ./static/
 
-ENV WEMM_DATA=webapp_data_v2
+ENV WEMM_DATA=webapp_data
 EXPOSE 7860
-CMD ["uvicorn", "server_v2:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uvicorn", "server_v3:app", "--host", "0.0.0.0", "--port", "7860"]

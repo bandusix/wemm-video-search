@@ -21,10 +21,10 @@ English · [中文说明 ↓](#中文说明)
 
 | File | Purpose |
 |---|---|
-| `server.py` + `static/index.html` | **v1**: local-file retrieval (port 8765) |
-| `server_v2.py` + `static/m3u8.html` | **v2**: m3u8 streaming index + dedup + proxy (port 8766) |
+| `server_v3.py` + `static/index.html` | The unified server — local files, online m3u8, dedup, HLS proxy (port 8765) |
 | `WeMM_video_search_colab.ipynb` | Colab notebook: official example + search demo (when you have no local GPU) |
 | `verify_local.py` | Command-line verification script |
+| `Dockerfile` | Container deployment |
 
 ## Quick start
 
@@ -37,9 +37,7 @@ uv pip install --python .venv/bin/python torch torchvision \
   "transformers==5.2.0" "qwen-vl-utils==0.0.14" "sentence-transformers>=5.7.0" \
   "accelerate>=1.1.0" av torchcodec fastapi uvicorn python-multipart pillow
 
-# 2. Start v2 (m3u8 streaming index)
-./run_server_v2.sh          # → http://localhost:8766
-# or v1 (local-file retrieval)
+# 2. Start the server
 ./run_server.sh             # → http://localhost:8765
 ```
 
@@ -101,10 +99,10 @@ Three-layer dedup (cheapest first): business `content_id` → manifest fingerpri
 
 | 文件 | 说明 |
 |---|---|
-| `server.py` + `static/index.html` | **v1**：本地视频文件检索（端口 8765） |
-| `server_v2.py` + `static/m3u8.html` | **v2**：m3u8 在线流式索引 + 判重 + 代理（端口 8766） |
+| `server_v3.py` + `static/index.html` | 统一服务端——本地文件、在线 m3u8、判重、HLS 代理（端口 8765） |
 | `WeMM_video_search_colab.ipynb` | Colab notebook：官方示例 + 视频检索 demo |
 | `verify_local.py` | 命令行验证脚本 |
+| `Dockerfile` | 容器部署 |
 
 ### 快速开始
 
@@ -117,9 +115,7 @@ uv pip install --python .venv/bin/python torch torchvision \
   "transformers==5.2.0" "qwen-vl-utils==0.0.14" "sentence-transformers>=5.7.0" \
   "accelerate>=1.1.0" av torchcodec fastapi uvicorn python-multipart pillow
 
-# 2. 启动 v2（m3u8 流式索引）
-./run_server_v2.sh          # → http://localhost:8766
-# 或 v1（本地文件检索）
+# 2. 启动服务
 ./run_server.sh             # → http://localhost:8765
 ```
 
