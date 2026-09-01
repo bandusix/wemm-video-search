@@ -439,7 +439,10 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
             seg_end = start + (_d or 0)
             for w in range(int(start // SEGMENT_SECONDS),
                             int(max(start, seg_end - 1e-3) // SEGMENT_SECONDS) + 1):
-                mid = w * SEGMENT_SECONDS + SEGMENT_SECONDS / 2
+                # 取该窗「实际覆盖范围」的中点，而非名义中点：末尾不完整窗口（如 632~634.6s，
+                # 名义中点 636s 已超出视频）否则永远补不上，钳到结尾又会落在无帧处
+                w_lo = w * SEGMENT_SECONDS
+                mid = (w_lo + min(w_lo + SEGMENT_SECONDS, duration)) / 2
                 if not (start <= mid < seg_end):
                     continue  # 本段不含该窗中点，交给别的分片
                 if any(int(t // SEGMENT_SECONDS) == w for t in ftimes):
