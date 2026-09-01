@@ -1,33 +1,81 @@
-# WeMM-mvp — 视频文字搜索
+# wemm-video-search
 
-用 [tencent/WeMM-Embedding-2B](https://huggingface.co/tencent/WeMM-Embedding-2B) 做的 MVP：加载一个视频，输入文字描述，定位到最匹配的时间段并播放。
+用 [tencent/WeMM-Embedding-2B](https://huggingface.co/tencent/WeMM-Embedding-2B) 多模态嵌入模型做的**视频"时刻"语义检索** —— 加载一个视频（本地文件或在线 m3u8），输入一句文字描述，定位到最匹配的时间段并直接跳播。
 
-## 用法
+> "找到你脑海中的那一刻。"
 
-1. 打开 [Google Colab](https://colab.research.google.com/)，`文件 → 上传笔记本`，选择 `WeMM_video_search_colab.ipynb`
-2. `代码执行程序 → 更改运行时类型 → T4 GPU`
-3. 从上到下依次运行。默认用 Big Buck Bunny 前 3 分钟做演示
-4. 换自己的视频：左侧文件面板上传，改第 3 节的 `VIDEO_PATH`，重跑第 3 节之后的 cell
+中英日韩西葡等多语言查询均可直接使用（模型多语言，实测同一语义不同语言定位到同一片段）。
 
-## 本地 Web 可视化（已验证）
+## 能力一览
+
+- **文字 → 视频时刻检索**：视频按窗口切片编码成 2048 维向量，文字 query 编码后余弦相似度排序，毫秒级定位时间段
+- **两种输入**：本地视频文件上传，或**在线 m3u8 / HLS 流**（不下载全片，流式抽帧索引）
+- **在线流不下载全片**：自动选最低码率变体、只解关键帧、并行拉分片，一部 2.5h 电影约几分钟索引完
+- **重复视频判重**：清单指纹（挡 token 轮换，零下载）+ 抽样帧感知指纹（挡同片不同清晰度），避免重复索引
+- **防盗链 / 需要 Referer 的流**：可填来源页地址，服务端注入 Referer/Origin 拉流；内置 HLS 代理让浏览器也能播放
+- **本地 Web 界面**：视频库切换、时间轴相似度柱状图、结果列表点击跳播
+
+## 目录结构
+
+| 文件 | 说明 |
+|---|---|
+| `server.py` + `static/index.html` | **v1**：本地视频文件检索（端口 8765） |
+| `server_v2.py` + `static/m3u8.html` | **v2**：m3u8 在线流式索引 + 判重 + 代理（端口 8766） |
+| `WeMM_video_search_colab.ipynb` | Colab notebook：官方示例 + 视频检索 demo（免 GPU 本地环境时用） |
+| `verify_local.py` | 命令行验证脚本 |
+
+## 快速开始
+
+需要 Python 3.12、ffmpeg、以及一块 GPU（NVIDIA CUDA / Apple Silicon MPS，或 CPU 也能小规模跑）。
 
 ```bash
-~/DIY/WeMM-mvp/run_server.sh
+# 1. 建环境（推荐 uv）
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python torch torchvision \
+  "transformers==5.2.0" "qwen-vl-utils==0.0.14" "sentence-transformers>=5.7.0" \
+  "accelerate>=1.1.0" av torchcodec fastapi uvicorn python-multipart pillow
+
+# 2. 启动 v2（m3u8 流式索引）
+./run_server_v2.sh          # → http://localhost:8766
+# 或 v1（本地文件检索）
+./run_server.sh             # → http://localhost:8765
 ```
 
-然后打开 http://localhost:8765 ：视频库点击切换视频、上传新视频自动切片编码索引、文字检索定位时间段（时间轴柱状图 + 结果列表，点击跳播）。索引数据缓存在 `webapp_data/`，重启秒开。
+> **macOS 注意**：torchcodec 需要找到 Homebrew ffmpeg 动态库，启动脚本已设 `DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib`。首次运行会下载约 6GB 模型权重。
 
-## 本地跑（Mac，已验证）
+打开页面后：粘贴一个 m3u8 链接或上传视频 → 等索引完成 → 输入文字描述检索。
 
-模型和依赖已装好（`.venv`，Python 3.12；权重在 `~/.cache/huggingface`）：
+## 硬件要求
 
-```bash
-cd ~/DIY/WeMM-mvp && DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib .venv/bin/python verify_local.py
+- **最低**：单卡 8GB 显存（纯文本/短视频，batch=1）
+- **推荐**：12–16GB 显存（T4 / 4070 等），图文视频混合无压力
+- **Apple Silicon**：MPS 直接可跑（`device="mps"` + float16）；本仓库在 M5 Max 上开发验证
+- **云平台**：Google Colab 免费 T4 即可跑通
+
+## 工作原理
+
+```
+视频 ──切窗(默认8s)──► 每窗抽关键帧 ──► WeMM 编码 2048维向量 ──► 存索引
+文字 query ──► WeMM 编码 ──► 与所有窗向量余弦相似度 ──► Top-K 时间段 ──► 跳播
 ```
 
-M5 Max 实测：加载 33s，片段编码 1.1s/段，23 段总耗时 115s（含官方示例）。
-`DYLD_FALLBACK_LIBRARY_PATH` 是给 torchcodec 找 Homebrew ffmpeg 动态库用的，不能省。
+在线 m3u8 的关键优化（PoC 实测）：
 
-## 原理
+- **不下载全片**：解析 master playlist 选最低码率变体，只对它抽帧
+- **只解关键帧**：`-skip_frame nokey`，解码量降一个数量级
+- **并行拉分片**：公网 CDN 瓶颈在每分片响应延迟，16 并发下载比 ffmpeg 单连接顺序读快约 **3.6x**（实测一部 39min 电影抽帧 300s → 83s）
+- **播放用原始流**：命中后 hls.js 直接 seek 原 m3u8，不产生转码副本
 
-视频按 8 秒切片 → 每片编码成 2048 维向量（只算一次）→ 文字 query 编码后余弦相似度排序 → 得到时间段。
+判重三层（成本从低到高）：业务 `content_id` → 清单指纹（分片时长序列 hash，零下载）→ 抽样帧感知指纹（dHash，抗清晰度/码率差异，实测同片相似度 0.99、异片 0.50）。
+
+## 规模化方向
+
+- 向量入 FAISS / Milvus / pgvector，PQ 压缩后单机可扛千万级窗口
+- 索引服务与对象存储同区域内网部署，读取免流量费
+- 部署走 vLLM / SGLang 提升编码吞吐
+
+## 致谢与许可
+
+- 模型：[tencent/WeMM-Embedding-2B](https://huggingface.co/tencent/WeMM-Embedding-2B)（腾讯）
+- 本项目基于 [MIT License](LICENSE) 开源
+- 请仅对你有权处理的视频内容做索引；本工具不含、也不鼓励任何绕过内容保护的用途
