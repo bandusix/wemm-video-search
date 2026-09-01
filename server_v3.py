@@ -42,6 +42,10 @@ PHASH_K = 16  # 判重指纹采样点数：存储与预检必须一致，都按 
 HLS_FETCH_WORKERS = 16
 # 合成微型 clip / 缩略图的并发数：纯本地 CPU（每片 ffmpeg 一次 spawn），按核数并行
 CLIP_WORKERS = max(4, min(16, (os.cpu_count() or 8)))
+# 补解非关键帧：当关键帧间隔 > 窗口长度时（如 GOP 10.4s > 窗口 8s），部分窗口没有任何
+# 关键帧、整段时间检索不到。开启后趁分片在本地补解一帧，覆盖率可达 100%。
+# 代价：解码增量可忽略(实测 +0.01s/分片)，但窗口数增加 → 编码向量时间同比例上升(实测约 +13%)。
+FILL_GAPS = True
 UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36")
 
@@ -354,7 +358,8 @@ def _parse_segments(media_url, media_text):
 
 
 def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
-                                    progress_cb=None, referer=None, fp_k=PHASH_K):
+                                    progress_cb=None, referer=None, fp_k=PHASH_K,
+                                    fill_gaps=FILL_GAPS):
     """公网 m3u8 专用：并行下载分片、各自本地抽关键帧。瓶颈是 CDN 每分片延迟，
     并发拉取比 ffmpeg 单连接顺序读快 ~5x（实测）。解码用 -skip_frame nokey（本地、极廉价）。
 
@@ -385,6 +390,7 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
         fp_targets.setdefault(segs[pos][0], []).append((i, max(0.0, target - segs[pos][2])))
 
     done = [0]
+    filled = [0]
     lock = threading.Lock()
     results = {}
     fp_frames = [None] * fp_k
@@ -424,11 +430,36 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
                 check=False, timeout=30)
             if dst.exists():
                 fp_frames[fp_i] = dst
+
+        # 补解非关键帧：关键帧间隔可能大于窗口长度（如 GOP 10.4s > 窗口 8s），
+        # 那些窗口没有任何关键帧 → 整段时间检索不到。趁分片还在本地补解一帧填上。
+        # 由「包含窗口中点的分片」负责，保证每窗只有一个分片来补，不重复。
+        timed_pairs = list(zip(ftimes, frames))
+        if fill_gaps:
+            seg_end = start + (_d or 0)
+            for w in range(int(start // SEGMENT_SECONDS),
+                            int(max(start, seg_end - 1e-3) // SEGMENT_SECONDS) + 1):
+                mid = w * SEGMENT_SECONDS + SEGMENT_SECONDS / 2
+                if not (start <= mid < seg_end):
+                    continue  # 本段不含该窗中点，交给别的分片
+                if any(int(t // SEGMENT_SECONDS) == w for t in ftimes):
+                    continue  # 该窗已有关键帧
+                dst = seg_dir / f"{idx:05d}_g{w:06d}.jpg"
+                subprocess.run(
+                    ["ffmpeg", "-y", "-loglevel", "error", "-i", str(dec_in),
+                     "-ss", f"{mid - start:.3f}", "-frames:v", "1",
+                     "-vf", "scale=-2:360", "-q:v", "5", str(dst)],
+                    check=False, timeout=30)
+                if dst.exists():
+                    timed_pairs.append((mid, dst))
+                    with lock:
+                        filled[0] += 1
+
         raw.unlink(missing_ok=True)
         if dec_in != raw:
             dec_in.unlink(missing_ok=True)
-        if frames:
-            results[idx] = list(zip(ftimes, frames))
+        if timed_pairs:
+            results[idx] = sorted(timed_pairs)
         with lock:
             done[0] += 1
             if progress_cb and done[0] % 5 == 0:
@@ -443,7 +474,7 @@ def _extract_all_keyframes_parallel(media_url, media_text, out_dir, duration,
             by_win.setdefault(int(t // SEGMENT_SECONDS), []).append(fp)
             timed.append((t, fp))
     timed.sort()
-    return by_win, timed, fp_frames
+    return by_win, timed, fp_frames, filled[0]
 
 
 def _make_thumb(src, dst, height=120):
@@ -506,12 +537,12 @@ def _index_hls(vid, master_url, name, referer=None):
 
         # 公网 m3u8：并行下载分片抽帧（瓶颈在 CDN 每分片延迟，并发比单连接顺序读快 ~5x）
         # 判重指纹帧由该步顺带产出（分片已在本地，就地精确 seek，省掉 16 次跨公网 seek）
-        by_win, _, fp_frames = _extract_all_keyframes_parallel(
+        by_win, _, fp_frames, gap_filled = _extract_all_keyframes_parallel(
             index_url, media_text, vdir / "frames", duration, _ext_progress, referer)
         if not by_win:  # 并行失败则回退到经过验证的单趟顺序读
             by_win, _ = _extract_all_keyframes(index_url, vdir / "frames", duration,
                                                _ext_progress, referer)
-            fp_frames = None
+            fp_frames, gap_filled = None, 0
         extract_seconds = round(time.time() - t_ext, 1)
         if not by_win:
             raise RuntimeError("未能从流中抽出任何帧，检查链接是否可访问 / 是否有防盗链")
@@ -575,6 +606,8 @@ def _index_hls(vid, master_url, name, referer=None):
         total = round(time.time() - t_all, 1)
         meta.update(status="ready", stage="完成", progress=100, clips=clips,
                     skipped_windows=n - len(clips),
+                    coverage=round(len(clips) / n * 100) if n else 100,
+                    gap_filled=gap_filled,
                     extract_seconds=extract_seconds,
                     encode_seconds=round(time.time() - t_enc, 1),
                     total_seconds=total,

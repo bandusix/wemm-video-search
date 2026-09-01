@@ -188,7 +188,8 @@ async function refreshVideos(keepPolling = true) {
   const vids = await (await fetch('/api/videos')).json();
   $('vlist').innerHTML = vids.map(v => {
     const tag = v.source_type === 'hls' ? '<span class="tag">HLS</span>' : '<span class="tag">本地</span>';
-    const st = v.status === 'ready' ? `${fmt(v.duration)} · ${v.clips.length} 窗 · 实时率 ${v.realtime_factor || '–'}x`
+    const cov = v.coverage != null && v.coverage < 100 ? ` · 覆盖 ${v.coverage}%` : '';
+    const st = v.status === 'ready' ? `${fmt(v.duration)} · ${v.clips.length} 窗 · 实时率 ${v.realtime_factor || '–'}x${cov}`
              : v.status === 'error' ? `失败: ${(v.error || '').slice(0, 40)}`
              : `${v.stage} ${v.progress || 0}%`;
     const thumb = v.status === 'ready' ? `<img src="/media/${v.id}/thumbs/0000.jpg">` : `<img>`;
