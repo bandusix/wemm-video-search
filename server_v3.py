@@ -444,12 +444,12 @@ def _index_hls(vid, master_url, name, referer=None):
         _write_meta(vid, meta)
 
         n = max(1, int(duration // SEGMENT_SECONDS) + (1 if duration % SEGMENT_SECONDS > 0.5 else 0))
-        meta.update(stage="单趟流式抽帧", progress=0)
+        meta.update(stage=f"并行流式抽帧({HLS_FETCH_WORKERS}并发)", progress=0)
         _write_meta(vid, meta)
         t_ext = time.time()
 
         def _ext_progress(pct):
-            meta.update(stage="单趟流式抽帧", progress=pct)
+            meta.update(stage=f"并行流式抽帧({HLS_FETCH_WORKERS}并发)", progress=pct)
             _write_meta(vid, meta)
 
         # 公网 m3u8：并行下载分片抽帧（瓶颈在 CDN 每分片延迟，并发比单连接顺序读快 ~5x）
