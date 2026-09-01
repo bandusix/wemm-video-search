@@ -19,6 +19,19 @@ printf -- '---\nlicense: mit\ntags:\n- video-search\n- multimodal-embedding\n---
 
 echo "上传到 HF..."
 "$HF" upload "$REPO" "$STAGE" . --repo-type model
+
+# hf upload 只增不删：把 HF 上多余的文件（本地已删除的）同步删掉，保持两边一致
+REMOTE=$(python3 -c "
+import json,urllib.request
+u='https://huggingface.co/api/models/$REPO'
+print('\n'.join(f['rfilename'] for f in json.load(urllib.request.urlopen(u))['siblings']))" 2>/dev/null || true)
+STALE=$(comm -23 \
+  <(echo "$REMOTE" | grep -v '^\.gitattributes$' | sort) \
+  <(cd "$STAGE" && find . -type f | sed 's|^\./||' | sort))
+if [ -n "$STALE" ]; then
+  echo "清理 HF 上已删除的文件: $(echo $STALE)"
+  "$HF" repos delete-files "$REPO" $STALE >/dev/null 2>&1 || true
+fi
 rm -rf "$STAGE"
 echo "✅ 已发布: https://huggingface.co/$REPO"
 echo "提示：这是代码镜像仓库；要在线可运行的 demo 需 HF PRO（Docker Space），或本地/自有 GPU 运行。"
